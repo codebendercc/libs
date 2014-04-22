@@ -90,7 +90,7 @@ class DefaultController extends Controller
 	    }
     }
 
-	public function getExampleCodeAction($auth_key, $version)
+	public function getExampleCodeAction($auth_key, $version, $library, $example)
 	{
 		if ($auth_key !== $this->container->getParameter('auth_key'))
 		{
@@ -100,47 +100,99 @@ class DefaultController extends Controller
 		if ($version == "v1")
 		{
 			$arduino_library_files = $this->container->getParameter('arduino_library_directory')."/";
+			$files = array();
 
-			$finder = new Finder();
-
-			$request = $this->getRequest();
-
-			// retrieve GET and POST variables respectively
-			$file = $request->query->get('file');
-
-			$last_slash = strrpos($file, "/");
-			$filename = substr($file, $last_slash + 1);
-			$directory = substr($file, 0, $last_slash);
-
-			$finder->files()->name($filename);
-			if (is_dir($arduino_library_files."examples"))
+			$dir = $arduino_library_files."examples/";
+			if (is_dir($dir.$library))
 			{
-				$finder->in($arduino_library_files."examples");
+				$files = array_merge($files, $this->getExampleCodeFromDir($dir, $library, $example));
 			}
 
-			if (is_dir($arduino_library_files."libraries"))
+			$dir = $arduino_library_files."libraries/";
+			if ($dir.$library)
 			{
-				$finder->in($arduino_library_files."libraries");
+				$files = array_merge($files, $this->getExampleCodeFromDir($dir, $library, $example));
 			}
 
-			if (is_dir($arduino_library_files."external-libraries"))
+			$dir = $arduino_library_files."external-libraries/";
+			if (is_dir($dir.$library))
 			{
-				$finder->in($arduino_library_files."external-libraries");
+				$files = array_merge($files, $this->getExampleCodeFromDir($dir, $library, $example));
 			}
 
-			$finder->path($directory);
-
-			$response = "";
-			foreach ($finder as $file)
-			{
-				$response = $file->getContents();
-			}
-			return new Response($response);
+			return new Response(json_encode(array('success' => true, "files" => $files)));
 		}
 		else
-		{
+			{
 			return new Response(json_encode(array("success" => false, "step" => 0, "message" => "Invalid API version.")));
 		}
+			}
+
+    private function getExampleCodeFromDir($dir, $library,  $example)
+    {
+        $finder = new Finder();
+        $finder->in($dir.$library);
+        $finder->name($example.".ino", $example.".pde");
+
+        if(iterator_count($finder) == 0)
+			{
+            $example =  str_replace(":", "/", $example);
+            $filename = pathinfo($example, PATHINFO_FILENAME);
+            $finder->name($filename.".ino", $filename.".pde");
+            if(iterator_count($finder) > 1)
+            {
+                $filesPath = NULL;
+                foreach($finder as $e)
+                {
+                    $path = $e -> getPath();
+                    if(!(strpos($path, $example)===false))
+                    {
+                        $filesPath = $e;
+                        break;
+                    }
+                }
+                if(!$filesPath)
+                {
+                    return array();
+			}
+		}
+            else if(iterator_count($finder) == 0)
+                return array();
+		else
+		{
+                $filesPathIterator = iterator_to_array($finder, false);
+                $filesPath = $filesPathIterator[0]->getPath();
+            }
+        }
+
+        else
+        {
+            $filesPathIterator = iterator_to_array($finder, false);
+            $filesPath = $filesPathIterator[0]->getPath();
+        }
+        $files = $this->getExampleFilesFromDir($filesPath);
+        return $files;
+    }
+
+    private function getExampleFilesFromDir($dir)
+    {
+        $filesFinder = new Finder();
+        $filesFinder->in($dir);
+        $filesFinder->name('*.cpp')->name('*.h')->name('*.c')->name('*.S')->name('*.pde')->name('*.ino');
+
+        $files = array();
+        foreach($filesFinder as $file)
+        {
+            if($file->getExtension() == "pde")
+                $name = $file->getBasename("pde")."ino";
+            else
+                $name = $file->getFilename();
+
+            $files[]=array("filename" => $name, "code" => $file->getContents());
+
+		}
+
+        return $files;
 	}
 
 	public function getLibraryCodeAction($auth_key, $version)
@@ -210,34 +262,29 @@ class DefaultController extends Controller
 
 		foreach ($finder as $file)
 		{
-//			if (strpos($file->getRelativePath(), "/examples/") === false)
-//				continue;
-
-			// Print the absolute path
-//		    print $file->getRealpath()."<br />\n";
-
-			// Print the relative path to the file, omitting the filename
-//			print $file->getRelativePath()."<br />\n";
-
-			// Print the relative path to the file
-//			print $file->getRelativePathname()."<br />\n";
-
 			$path = str_ireplace("/examples/", "/", $file->getRelativePath());
 			$library_name = strtok($path, "/");
-			$example_name = strtok("/");
-			$url = $this->get('router')->generate('codebender_library_get_example_code', array("auth_key" => $this->container->getParameter('auth_key'),"version" => $version),true).'?file='.$file->getRelativePathname();
+			$tmp = strtok("/");
+			$type = "";
+			$filename = $file->getBasename(".".$file->getExtension());
+			while($tmp!= "" && !($tmp === false))
+			{
+				if($tmp != 'examples' && $tmp != 'Examples' && $tmp != $filename)
+				{
+					if($type == "")
+						$type = $tmp;
+					else
+						$type = $type.":".$tmp;
+				}
+				$tmp = strtok("/");
+			}
+			$example_name= ($type == "" ?$filename : $type.":".$filename);
 
 			if(!isset($libraries[$library_name]))
 			{
 				$libraries[$library_name] = array("description"=> "", "examples" => array());
 			}
-			$libraries[$library_name]["examples"][] = array("name" => $example_name, "filename" => $file->getFilename(), "url" => $url);
-
-//			print $library_name."<br />\n";
-//			print $example_name."<br />\n";
-
-			// Print the relative path to the file
-//			print $file->getFilename()."<br />\n";
+			$libraries[$library_name]["examples"][] = array("name" => $example_name);
 		}
 		return $libraries;
 	}
